@@ -1,0 +1,82 @@
+{
+  "data": {
+    "rows": 10000,
+    "train": 7000,
+    "val": 1500,
+    "test": 1500,
+    "spread_rate": 0.048,
+    "crisis_rate": 0.042,
+    "test_crises": 60
+  },
+  "costs_rs": {
+    "false_alarm": 500,
+    "missed_crisis": 25000
+  },
+  "results_test": {
+    "Never alert": {
+      "alerts": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 60,
+      "precision": 0.0,
+      "recall": 0.0,
+      "cost_per_1000_mentions_rs": 1000000,
+      "threshold": null,
+      "pr_auc": null
+    },
+    "Follower-count rule": {
+      "alerts": 242,
+      "tp": 46,
+      "fp": 196,
+      "fn": 14,
+      "precision": 0.19,
+      "recall": 0.767,
+      "cost_per_1000_mentions_rs": 298667,
+      "pr_auc": 0.343,
+      "threshold": 1000.0
+    },
+    "Early-reshare rule": {
+      "alerts": 268,
+      "tp": 53,
+      "fp": 215,
+      "fn": 7,
+      "precision": 0.198,
+      "recall": 0.883,
+      "cost_per_1000_mentions_rs": 188333,
+      "pr_auc": 0.602,
+      "threshold": 2.0
+    },
+    "Logistic regression (v1)": {
+      "alerts": 326,
+      "tp": 53,
+      "fp": 273,
+      "fn": 7,
+      "precision": 0.163,
+      "recall": 0.883,
+      "cost_per_1000_mentions_rs": 207667,
+      "pr_auc": 0.637,
+      "threshold": 0.2723
+    },
+    "Gradient boosting (v1b)": {
+      "alerts": 321,
+      "tp": 53,
+      "fp": 268,
+      "fn": 7,
+      "precision": 0.165,
+      "recall": 0.883,
+      "cost_per_1000_mentions_rs": 206000,
+      "pr_auc": 0.6,
+      "threshold": 0.0344
+    }
+  },
+  "logreg_bootstrap": {
+    "precision_95ci": [
+      0.123,
+      0.203
+    ],
+    "recall_95ci": [
+      0.796,
+      0.957
+    ]
+  }
+}

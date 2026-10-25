@@ -1,0 +1,10 @@
+# Exact versions: the saved spread model only loads with scikit-learn 1.8.0.
+# Choose Python 3.12 in Streamlit Cloud's advanced settings.
+streamlit==1.65.0
+altair==6.3.0
+scikit-learn==1.8.0
+pandas==3.0.2
+numpy==2.4.4
+joblib==1.5.3
+pydantic==2.13.5
+requests==2.33.1
