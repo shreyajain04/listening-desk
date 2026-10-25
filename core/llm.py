@@ -3,6 +3,7 @@ Order: Groq (free plan) -> Gemini (free tier) -> raise LLMError so callers fall 
 Plain HTTP via `requests`, so no provider SDK versions can break the app."""
 import json
 import re
+import time
 
 import requests
 
@@ -24,26 +25,53 @@ def _parse_json(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+REASONING_HEADROOM = 1500   # thinking models spend tokens before the answer; leave room for both
+
+
+def _post_with_fallbacks(url: str, headers: dict, body: dict, optional: list[tuple[list[str], str]]) -> requests.Response:
+    """POST, and if the API rejects an optional setting (HTTP 400 naming it), drop it and try again."""
+    r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
+    for path, word in optional:
+        if r.status_code != 400 or word not in r.text.lower():
+            continue
+        target = body
+        for key in path[:-1]:
+            target = target.get(key, {})
+        if path[-1] in target:
+            target.pop(path[-1])
+            r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
+    return r
+
+
 def _groq(system: str, user: str, max_tokens: int) -> str:
     key = secret("GROQ_API_KEY")
     if not key:
         raise LLMError("GROQ_API_KEY is not set")
+    model = secret("GROQ_MODEL", DEFAULT_GROQ_MODEL)
     body = {
-        "model": secret("GROQ_MODEL", DEFAULT_GROQ_MODEL),
+        "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "temperature": 0,
-        "max_tokens": max_tokens,
+        "max_tokens": max_tokens + REASONING_HEADROOM,
         "response_format": {"type": "json_object"},
     }
+    if "gpt-oss" in model:
+        body["reasoning_effort"] = "low"     # short thinking: faster and uses less of the free quota
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
-    if r.status_code == 400 and "response_format" in r.text:   # model without JSON mode
-        body.pop("response_format")
-        r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
+    optional = [(["response_format"], "response_format"), (["reasoning_effort"], "reasoning")]
+    r = _post_with_fallbacks(url, headers, body, optional)
+    if r.status_code == 429:                  # per-minute limit: wait briefly once, then let Gemini take over
+        wait = float(r.headers.get("retry-after", "0") or 0)
+        if 0 < wait <= 12:
+            time.sleep(wait)
+            r = _post_with_fallbacks(url, headers, body, optional)
     if r.status_code != 200:
         raise LLMError(f"Groq HTTP {r.status_code}: {r.text[:200]}")
-    return r.json()["choices"][0]["message"]["content"]
+    content = r.json()["choices"][0]["message"].get("content") or ""
+    if not content.strip():
+        raise LLMError("Groq returned an empty answer")
+    return content
 
 
 def _gemini(system: str, user: str, max_tokens: int) -> str:
@@ -53,21 +81,18 @@ def _gemini(system: str, user: str, max_tokens: int) -> str:
     model = secret("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    thinking = {"thinkingLevel": "low"} if model.startswith("gemini-3") else {"thinkingBudget": 0}
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0, "maxOutputTokens": max_tokens,
-                             "responseMimeType": "application/json",
-                             "thinkingConfig": {"thinkingBudget": 0}},
+        "generationConfig": {"temperature": 0, "maxOutputTokens": max_tokens + REASONING_HEADROOM,
+                             "responseMimeType": "application/json", "thinkingConfig": thinking},
     }
-    r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
-    if r.status_code == 400 and "thinking" in r.text.lower():   # model without thinking control
-        body["generationConfig"].pop("thinkingConfig")
-        r = requests.post(url, json=body, headers=headers, timeout=TIMEOUT)
+    r = _post_with_fallbacks(url, headers, body, [(["generationConfig", "thinkingConfig"], "thinking")])
     if r.status_code != 200:
         raise LLMError(f"Gemini HTTP {r.status_code}: {r.text[:200]}")
     parts = r.json()["candidates"][0]["content"]["parts"]
-    return "".join(p.get("text", "") for p in parts)
+    return "".join(p.get("text", "") for p in parts if not p.get("thought"))
 
 
 PROVIDERS = [("Groq", _groq), ("Gemini", _gemini)]

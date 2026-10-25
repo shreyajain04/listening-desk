@@ -27,9 +27,12 @@ LLM_CALLS_PER_WINDOW = 25        # per browser session
 LLM_WINDOW_SECONDS = 600         # 10 minutes
 CLASSIFY_BATCH_SIZE = 5          # mentions per classifier call (keeps tokens per minute low)
 
-# Default model IDs. Override them in Streamlit secrets without touching code.
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Default model IDs (checked 25 Oct 2026 against each provider's deprecations page).
+# Groq retired llama-3.3-70b-versatile on 16 Aug 2026 and recommends openai/gpt-oss-120b.
+# Google lists gemini-3.5-flash as the replacement for gemini-2.5-flash.
+# Override them in Streamlit secrets (GROQ_MODEL, GEMINI_MODEL) without touching code.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def secret(name: str, default: str | None = None) -> str | None:
