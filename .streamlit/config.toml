@@ -1,0 +1,21 @@
+[theme]
+base = "light"
+primaryColor = "#2B3990"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F3F9"
+textColor = "#16203A"
+borderColor = "#CBD2E1"
+linkColor = "#2B3990"
+baseRadius = "6px"
+baseFontSize = 17
+showWidgetBorder = true
+font = "Barlow:https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap, sans-serif"
+headingFont = "Barlow Condensed:https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&display=swap, sans-serif"
+headingFontWeights = 600
+chartCategoricalColors = ["#2B3990", "#C62828", "#B35C00", "#2E7D4F", "#5E35B1"]
+
+[theme.sidebar]
+backgroundColor = "#EEF0FA"
+
+[client]
+toolbarMode = "minimal"
