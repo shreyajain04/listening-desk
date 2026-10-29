@@ -15,6 +15,7 @@ from core.config import (DATA, DEFAULT_GEMINI_MODEL, DEFAULT_GROQ_MODEL, EVAL, L
                          LLM_WINDOW_SECONDS, MAX_INPUT_CHARS, TOPIC_LABELS, secret)
 from core.briefing import answer_question, compact_posts, compute_stats, generate_briefing
 from core.drafter import draft_reply
+from core.evaluate import FIELDS, load_gold, run_classifier, score
 from core.guards import check_draft
 from core.llm import LLMError, provider_status
 from core.pipeline import analyze
@@ -98,7 +99,7 @@ class RateLimited(LLMError):
 
 def init_state():
     defaults = {"analyses": {}, "drafts": {}, "decisions": [], "selected": None, "status": {}, "ack": {},
-                "llm_calls": [], "offline": False, "custom": None, "custom_text": "", "reviewer": "", "briefing": None, "chat": []}
+                "llm_calls": [], "offline": False, "custom": None, "custom_text": "", "reviewer": "", "briefing": None, "chat": [], "gold_results": None}
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 
@@ -615,8 +616,8 @@ with tab_model:
     c1, c2 = st.columns(2)
     cost_fp = c1.number_input("Cost of a false alarm (₹)", min_value=0, value=500, step=100)
     cost_fn = c2.number_input("Cost of a missed crisis (₹)", min_value=0, value=25_000, step=1_000)
-    options = sorted({0.002, 0.005, 0.01, 0.015, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, round(threshold, 4)})
-    t = st.select_slider("Alert when the chance of spreading is at least", options=options, value=round(threshold, 4),
+    options = sorted({0.002, 0.005, 0.01, 0.015, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, threshold})  # exact value, so it reads 1.9% everywhere
+    t = st.select_slider("Alert when the chance of spreading is at least", options=options, value=threshold,
                          format_func=lambda v: f"{v:.1%}")
     neg, crisis = preds["negative"].astype(bool), preds["crisis"].astype(bool)
 
@@ -662,9 +663,52 @@ with tab_model:
                    f"{cost_fp / max(cost_fp + cost_fn, 1):.1%}.")
 
     st.markdown("### Classifier against human labels")
-    st.markdown('<div class="ld-empty"><div class="ld-muted">Added once the 120-post gold set is labelled by two team '
-                'members: accuracy for English, Hinglish and sarcastic posts, and examples of mistakes.</div></div>',
-                unsafe_allow_html=True)
+    st.caption("Step 1: two team members label the 40 template posts themselves, without looking at the app's answers, "
+               "and agree on one final answer per post. Step 2: upload the file. Step 3: score the AI.")
+    st.download_button("Download the gold-set template (CSV)", (EVAL / "gold_set_template.csv").read_bytes(),
+                       file_name="gold_set_template.csv", mime="text/csv")
+    st.caption("Allowed labels. Sentiment: positive, neutral, negative. Topic: delay, cancellation, baggage, refund, "
+               "staff_behaviour, safety, pricing, app_website, other. Urgency: low, medium, high. Sarcasm: yes or no. "
+               "Language: english, hinglish, hindi, other.")
+    up = st.file_uploader("Upload your labelled gold set (CSV)", type="csv", key="gold_upload")
+    if up is not None:
+        gold, problems = load_gold(pd.read_csv(up))
+        if problems:
+            st.warning("Skipped rows with a label outside the allowed list: " + "; ".join(problems[:8])
+                       + (" ..." if len(problems) > 8 else ""))
+        if gold.empty:
+            st.error("No fully labelled rows found. Fill in all five label columns.")
+        elif st.button(f"Score the AI on {len(gold)} labelled posts", type="primary"):
+            with st.spinner("The AI is labelling the same posts"):
+                ss.gold_results = score(gold, run_classifier(gold, use_llm=not ss.offline, on_call=on_llm_call))
+    res = ss.get("gold_results")
+    if res:
+        if not res["llm_used"]:
+            st.warning("Some answers came from keyword rules, not the AI (offline mode or quota). "
+                       "Rerun with the AI connected before you present these numbers.")
+        st.markdown(f"**Scored on {res['n']} posts labelled by people.**")
+        mcols = st.columns(len(FIELDS))
+        for c, f in zip(mcols, FIELDS):
+            c.metric(f"{f.capitalize()} accuracy", f"{res['accuracy'][f]:.0%}")
+        sl = pd.DataFrame([{"Group": k, "Posts": v["posts"], "Sentiment accuracy": v["sentiment_accuracy"],
+                            "Topic accuracy": v["topic_accuracy"]} for k, v in res["slices"].items()])
+        st.dataframe(sl, hide_index=True, width="stretch",
+                     column_config={"Sentiment accuracy": st.column_config.NumberColumn(format="percent"),
+                                    "Topic accuracy": st.column_config.NumberColumn(format="percent")})
+        g1, g2 = st.columns([2, 3], gap="large")
+        with g1:
+            st.markdown("**Sentiment: people (rows) vs AI (columns)**")
+            st.dataframe(res["confusion"], width="stretch")
+        with g2:
+            mk = res["mistakes"].copy()
+            st.markdown(f"**Where the AI disagreed with people: {len(mk)} of {res['n']} posts**")
+            if len(mk):
+                mk["Disagreement"] = mk.apply(lambda r: "; ".join(f"{f}: people said {r['human_' + f]}, AI said {r['ai_' + f]}"
+                                                                 for f in FIELDS if not r[f + "_ok"]), axis=1)
+                st.dataframe(mk[["id", "text", "Disagreement"]], hide_index=True, width="stretch")
+        st.download_button("Download full results (CSV)", res["table"].to_csv(index=False).encode(),
+                           file_name="gold_set_results.csv", mime="text/csv")
+
     st.markdown("### Red-team results")
     st.markdown('<div class="ld-empty"><div class="ld-muted">Added after the 20-attack test run: which attacks the '
                 'guardrails stopped and which got through.</div></div>', unsafe_allow_html=True)
