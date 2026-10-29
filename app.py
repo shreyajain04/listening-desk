@@ -663,13 +663,20 @@ with tab_model:
                    f"{cost_fp / max(cost_fp + cost_fn, 1):.1%}.")
 
     st.markdown("### Classifier against human labels")
-    st.caption("Step 1: two team members label the 40 template posts themselves, without looking at the app's answers, "
-               "and agree on one final answer per post. Step 2: upload the file. Step 3: score the AI.")
-    st.download_button("Download the gold-set template (CSV)", (EVAL / "gold_set_template.csv").read_bytes(),
-                       file_name="gold_set_template.csv", mime="text/csv")
-    st.caption("Allowed labels. Sentiment: positive, neutral, negative. Topic: delay, cancellation, baggage, refund, "
-               "staff_behaviour, safety, pricing, app_website, other. Urgency: low, medium, high. Sarcasm: yes or no. "
-               "Language: english, hinglish, hindi, other.")
+    st.caption("Option A, ready now: 40 real airline tweets whose sentiment was labelled by human annotators "
+               "(CrowdFlower; every annotator agreed). Option B: your team labels the 40 IndiGo-style template posts, "
+               "covering Hinglish and sarcasm, without looking at the app's answers. Then upload the file and score the AI.")
+    d1, d2 = st.columns(2)
+    for col, fname, label in [(d1, "gold_airline_human.csv", "Option A: human-labelled airline tweets (CSV)"),
+                              (d2, "gold_set_template.csv", "Option B: blank template to label (CSV)")]:
+        path = EVAL / fname
+        if path.exists():
+            col.download_button(label, path.read_bytes(), file_name=fname, mime="text/csv", width="stretch")
+        else:
+            col.caption(f"{fname} is missing from the eval folder on GitHub.")
+    st.caption("Allowed labels. Sentiment (required): positive, neutral, negative. Optional: topic (delay, cancellation, "
+               "baggage, refund, staff_behaviour, safety, pricing, app_website, other), urgency (low, medium, high), "
+               "sarcasm (yes, no), language (english, hinglish, hindi, other). Blank fields are not scored.")
     up = st.file_uploader("Upload your labelled gold set (CSV)", type="csv", key="gold_upload")
     if up is not None:
         gold, problems = load_gold(pd.read_csv(up))
@@ -677,7 +684,7 @@ with tab_model:
             st.warning("Skipped rows with a label outside the allowed list: " + "; ".join(problems[:8])
                        + (" ..." if len(problems) > 8 else ""))
         if gold.empty:
-            st.error("No fully labelled rows found. Fill in all five label columns.")
+            st.error("No labelled rows found. Every row needs at least a sentiment label.")
         elif st.button(f"Score the AI on {len(gold)} labelled posts", type="primary"):
             with st.spinner("The AI is labelling the same posts"):
                 ss.gold_results = score(gold, run_classifier(gold, use_llm=not ss.offline, on_call=on_llm_call))
@@ -686,12 +693,15 @@ with tab_model:
         if not res["llm_used"]:
             st.warning("Some answers came from keyword rules, not the AI (offline mode or quota). "
                        "Rerun with the AI connected before you present these numbers.")
-        st.markdown(f"**Scored on {res['n']} posts labelled by people.**")
-        mcols = st.columns(len(FIELDS))
-        for c, f in zip(mcols, FIELDS):
-            c.metric(f"{f.capitalize()} accuracy", f"{res['accuracy'][f]:.0%}")
+        st.markdown(f"**Scored on {res['n']} posts labelled by people.** Fields nobody labelled are left out.")
+        scored = list(res["accuracy"])
+        mcols = st.columns(max(len(scored), 1))
+        for c, f in zip(mcols, scored):
+            c.metric(f"{f.capitalize()} accuracy", f"{res['accuracy'][f]:.0%}", help=f"Based on {res['counted'][f]} labelled posts")
         sl = pd.DataFrame([{"Group": k, "Posts": v["posts"], "Sentiment accuracy": v["sentiment_accuracy"],
                             "Topic accuracy": v["topic_accuracy"]} for k, v in res["slices"].items()])
+        if not sl.empty and sl["Topic accuracy"].isna().all():
+            sl = sl.drop(columns=["Topic accuracy"])
         st.dataframe(sl, hide_index=True, width="stretch",
                      column_config={"Sentiment accuracy": st.column_config.NumberColumn(format="percent"),
                                     "Topic accuracy": st.column_config.NumberColumn(format="percent")})
@@ -704,7 +714,7 @@ with tab_model:
             st.markdown(f"**Where the AI disagreed with people: {len(mk)} of {res['n']} posts**")
             if len(mk):
                 mk["Disagreement"] = mk.apply(lambda r: "; ".join(f"{f}: people said {r['human_' + f]}, AI said {r['ai_' + f]}"
-                                                                 for f in FIELDS if not r[f + "_ok"]), axis=1)
+                                                                 for f in FIELDS if r[f + "_ok"] is False), axis=1)
                 st.dataframe(mk[["id", "text", "Disagreement"]], hide_index=True, width="stretch")
         st.download_button("Download full results (CSV)", res["table"].to_csv(index=False).encode(),
                            file_name="gold_set_results.csv", mime="text/csv")
