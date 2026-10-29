@@ -12,13 +12,16 @@ YES, NO = {"yes", "y", "true", "1"}, {"no", "n", "false", "0"}
 
 
 def load_gold(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Clean and check the human labels. Returns (usable rows, list of problems)."""
+    """Clean and check human labels. Sentiment is required; the other four fields are optional, and a field
+    is scored only where a person filled it in. Returns (usable rows, list of problems)."""
     problems = []
-    missing = [c for c in ["id", "text", *FIELDS] if c not in df.columns]
+    missing = [c for c in ["id", "text", "sentiment"] if c not in df.columns]
     if missing:
         return pd.DataFrame(), [f"Missing columns: {', '.join(missing)}. Use the template's column names."]
     df = df.copy()
     for c in ["id", "text", *FIELDS]:
+        if c not in df.columns:
+            df[c] = ""
         df[c] = df[c].fillna("").astype(str).str.strip()
     for c in ALLOWED:
         df[c] = df[c].str.lower().str.replace(" ", "_")
@@ -27,8 +30,11 @@ def load_gold(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     for _, r in df.iterrows():
         if not r["text"]:
             continue
-        bad = [f"{c}='{r[c]}'" for c in ALLOWED if r[c] not in ALLOWED[c]]
-        if r["sarcasm"] not in YES | NO:
+        if not r["sentiment"]:
+            problems.append(f"{r['id']}: sentiment is empty")
+            continue
+        bad = [f"{c}='{r[c]}'" for c in ALLOWED if r[c] and r[c] not in ALLOWED[c]]
+        if r["sarcasm"] and r["sarcasm"] not in YES | NO:
             bad.append(f"sarcasm='{r['sarcasm']}'")
         if bad:
             problems.append(f"{r['id']}: " + ", ".join(bad))
@@ -36,7 +42,8 @@ def load_gold(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             keep.append(r)
     gold = pd.DataFrame(keep)
     if not gold.empty:
-        gold["sarcasm"] = gold["sarcasm"].isin(YES)
+        gold["sarcasm"] = gold["sarcasm"].map(lambda v: True if v in YES else False if v in NO else None)
+        gold = gold.astype(object).where(gold != "", None)   # blank = not labelled (no forward-filling)
     return gold, problems
 
 
@@ -49,27 +56,39 @@ def run_classifier(gold: pd.DataFrame, use_llm: bool = True, on_call=None) -> di
 
 
 def score(gold: pd.DataFrame, labels: dict) -> dict:
+    """Accuracy per field, counted only over posts where a person gave that label."""
     rows = []
     for _, r in gold.iterrows():
         lab = labels[r["id"]]
         row = {"id": r["id"], "text": r["text"], "ai_source": lab.source}
         for f in FIELDS:
-            row[f"human_{f}"] = r[f]
+            human = r[f]
             row[f"ai_{f}"] = getattr(lab, f)
-            row[f"{f}_ok"] = row[f"human_{f}"] == row[f"ai_{f}"]
+            missing = human is None or (not isinstance(human, (str, bool)) and pd.isna(human))
+            row[f"human_{f}"] = None if missing else human
+            row[f"{f}_ok"] = None if missing else bool(human == getattr(lab, f))
         rows.append(row)
     res = pd.DataFrame(rows)
-    acc = {f: float(res[f"{f}_ok"].mean()) for f in FIELDS}
+    acc, counted = {}, {}
+    for f in FIELDS:
+        has = res[f"{f}_ok"].notna()
+        if has.any():
+            acc[f] = float(res.loc[has, f"{f}_ok"].astype(bool).mean())
+            counted[f] = int(has.sum())
     slices = {}
-    groups = {"English": res["human_language"] == "english",
-              "Hinglish or Hindi": res["human_language"].isin(["hinglish", "hindi"]),
-              "Sarcastic": res["human_sarcasm"],
-              "Not sarcastic": ~res["human_sarcasm"]}
+    lang = res["human_language"]
+    sarc = res["human_sarcasm"]
+    groups = {"English": lang == "english", "Hinglish or Hindi": lang.isin(["hinglish", "hindi"]),
+              "Sarcastic": sarc == True, "Not sarcastic": sarc == False}  # noqa: E712
     for name, mask in groups.items():
+        mask = mask.fillna(False).astype(bool)
         if mask.sum():
-            slices[name] = {"posts": int(mask.sum()), "sentiment_accuracy": float(res.loc[mask, "sentiment_ok"].mean()),
-                            "topic_accuracy": float(res.loc[mask, "topic_ok"].mean())}
-    mistakes = res[~res[[f"{f}_ok" for f in FIELDS]].all(axis=1)]
+            topic_ok = res.loc[mask, "topic_ok"].dropna()
+            slices[name] = {"posts": int(mask.sum()),
+                            "sentiment_accuracy": float(res.loc[mask, "sentiment_ok"].astype(bool).mean()),
+                            "topic_accuracy": float(topic_ok.astype(bool).mean()) if len(topic_ok) else None}
+    wrong = res[[f"{f}_ok" for f in FIELDS]].apply(lambda col: col == False)  # noqa: E712
+    mistakes = res[wrong.any(axis=1)]
     confusion = pd.crosstab(res["human_sentiment"], res["ai_sentiment"], rownames=["Human"], colnames=["AI"])
-    return {"n": len(res), "accuracy": acc, "slices": slices, "mistakes": mistakes, "table": res,
-            "confusion": confusion, "llm_used": bool((res["ai_source"].isin(["Groq", "Gemini"])).all())}
+    return {"n": len(res), "accuracy": acc, "counted": counted, "slices": slices, "mistakes": mistakes,
+            "table": res, "confusion": confusion, "llm_used": bool(res["ai_source"].isin(["Groq", "Gemini"]).all())}
